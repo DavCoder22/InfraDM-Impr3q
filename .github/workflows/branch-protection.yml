@@ -1,0 +1,26 @@
+name: Branch Protection
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  check-branch-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Verify branch protection
+        if: github.ref == 'refs/heads/main' || github.event.pull_request.base.ref == 'main'
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "PR to main - requires code owner review"
+            # Additional checks can be added here
+          else
+            echo "Direct push to main - this should be prevented by branch protection"
+            echo "::error::Direct pushes to main are not allowed. Please create a pull request."
+            exit 1
+          fi
