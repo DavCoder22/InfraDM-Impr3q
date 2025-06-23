@@ -1,0 +1,5 @@
+# Only track README files in main branch
+* -text
+!README.md
+!README
+!.github/CODEOWNERS
