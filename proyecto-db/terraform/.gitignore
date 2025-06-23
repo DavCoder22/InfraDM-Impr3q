@@ -1,0 +1,27 @@
+# Claves y credenciales
+*.pem
+*.key
+*.pub
+
+# Variables sensibles
+terraform.tfvars
+*.tfvars
+
+# Estado de Terraform
+.terraform/
+.terraform.lock.hcl
+
+# Logs
+tfplan
+*.log
+
+# Archivos temporales
+*.tmp
+*.bak
+
+# Archivos de configuración local
+*.tfvars.json
+
+# Archivos de caché
+.cache
+.env
