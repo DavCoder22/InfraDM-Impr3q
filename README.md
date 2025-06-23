@@ -1,16 +1,16 @@
 # InfraDM-Impr3q
 
-Repositorio de infraestructura para el proyecto de Programación Distribuida.
+Infrastructure repository for the Distributed Programming project.
 
-## Estructura de Ramas
+## Branch Structure
 
-- `main`: Rama de producción. Solo contiene documentación y archivos de configuración.
-- `develop`: Rama de desarrollo. Contiene el código fuente activo.
+- `main`: Production branch. Contains only documentation and configuration files.
+- `develop`: Development branch. Contains the active source code.
 
-## Propietario del Código
+## Code Owner
 
-- @JuanGuevara90 es el propietario del código y debe aprobar todos los cambios en la rama `main`.
+- @JuanGuevara90 is the code owner and must approve all changes to the `main` branch.
 
-## Despliegue
+## Deployment
 
-Los despliegues a producción desde la rama `main` requieren la aprobación del propietario del código.
+Deployments to production from the `main` branch require the code owner's approval.
