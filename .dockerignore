@@ -1,0 +1,17 @@
+node_modules
+npm-debug.log
+Dockerfile
+docker-compose.yml
+.git
+.gitignore
+.idea
+.vscode
+*.md
+.env
+.terraform
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+.terraform/**/*
+*.tfvars
+*.tfvars.json

@@ -1,9 +1,3 @@
-provider "aws" {
-  region = "us-east-1"
-  shared_config_files = ["~/.aws/config"]
-  shared_credentials_files = ["~/.aws/credentials"]
-}
-
 # MySQL EC2 Instance
 resource "aws_instance" "mysql" {
   ami           = "ami-09e6f87a47903347c"  # Ubuntu 22.04 LTS

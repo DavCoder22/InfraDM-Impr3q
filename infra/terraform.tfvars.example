@@ -1,0 +1,40 @@
+# AWS Configuration
+aws_region    = "us-east-1"
+key_name      = "your-key-pair-name"  # Make sure this key pair exists in your AWS account
+
+# EC2 Configuration
+instance_type = "t3.medium"      # t3.medium is a good balance of CPU and memory for development
+
+# Application Configuration
+project_name = "infradm"
+jwt_secret = "generate-a-secure-random-secret"
+
+# Database Configuration
+db_name = "catalogodb"
+db_username = "postgres"
+db_password = "change-me-please"  # Use a strong password in production
+
+# MySQL Configuration
+mysql_database = "catalogodb"
+mysql_username = "mysqluser"
+mysql_password = "change-me-please"  # Use a strong password in production
+mysql_root_password = "change-me-root"  # Use a strong root password in production
+
+# MongoDB Configuration
+mongodb_username = "mongouser"
+mongodb_password = "change-me-please"  # Use a strong password in production
+mongodb_name = "catalogodb"
+
+# AWS Credentials (for application use)
+# These are different from your AWS provider credentials
+# They are used by the application to access AWS services like S3
+aws_access_key_id = ""
+aws_secret_access_key = ""
+
+# Note: For production, consider using AWS Secrets Manager or Parameter Store
+# instead of storing sensitive values directly in variables.
+
+# Network Configuration
+vpc_cidr = "10.0.0.0/16"
+public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnet_cidrs = ["10.0.101.0/24", "10.0.102.0/24"]
