@@ -1,3 +1,16 @@
+# Project Configuration
+variable "environment" {
+  description = "Environment (e.g., Production, Development, Staging)"
+  type        = string
+  default     = "Production"
+}
+
+variable "project_name" {
+  description = "Name of the project"
+  type        = string
+  default     = "InfraDM"
+}
+
 # AWS Configuration
 variable "region" {
   description = "AWS region to deploy resources"
@@ -25,29 +38,12 @@ variable "public_subnet_cidrs" {
 }
 
 # Database Configuration
-variable "mysql_username" {
-  description = "Username for MySQL database"
-  type        = string
-  default     = "admin"
-}
-
-variable "mysql_password" {
-  description = "Password for MySQL database"
-  type        = string
-  sensitive   = true
-  default     = "ChangeMe123!"
-}
-
-variable "mysql_database" {
-  description = "Name of the MySQL database"
-  type        = string
-  default     = "infradm_db"
-}
-
-variable "postgres_username" {
+# PostgreSQL Configuration
+variable "postgres_user" {
   description = "Username for PostgreSQL database"
   type        = string
   default     = "postgres"
+  sensitive   = true
 }
 
 variable "postgres_password" {
@@ -59,6 +55,34 @@ variable "postgres_password" {
 
 variable "postgres_db" {
   description = "Name of the PostgreSQL database"
+  type        = string
+  default     = "infradm_db"
+}
+
+# MySQL Configuration
+variable "mysql_root_password" {
+  description = "Root password for MySQL database"
+  type        = string
+  sensitive   = true
+  default     = "ChangeMeRoot123!"
+}
+
+variable "mysql_user" {
+  description = "Username for MySQL database"
+  type        = string
+  default     = "admin"
+  sensitive   = true
+}
+
+variable "mysql_password" {
+  description = "Password for MySQL database"
+  type        = string
+  sensitive   = true
+  default     = "ChangeMe123!"
+}
+
+variable "mysql_database" {
+  description = "Name of the MySQL database"
   type        = string
   default     = "infradm_db"
 }
@@ -75,6 +99,7 @@ variable "mongodb_username" {
   description = "Username for MongoDB database"
   type        = string
   default     = "mongoadmin"
+  sensitive   = true
 }
 
 variable "mongodb_password" {

@@ -1,8 +1,8 @@
 # MySQL EC2 Instance
 resource "aws_instance" "mysql" {
-  ami           = "ami-09e6f87a47903347c"  # Ubuntu 22.04 LTS
-  instance_type = "t2.micro"
-  subnet_id     = var.subnet_ids[0]
+  ami           = "ami-020cba7c55df1f615"  # Specific Ubuntu AMI
+  instance_type = "t2.micro"  # Free tier eligible
+  subnet_id     = aws_subnet.public[0].id  # Use the first public subnet
   key_name      = var.key_name
   vpc_security_group_ids = [aws_security_group.mysql.id]
 
@@ -27,9 +27,9 @@ resource "aws_instance" "mysql" {
 
 # PostgreSQL EC2 Instance
 resource "aws_instance" "postgres" {
-  ami           = "ami-09e6f87a47903347c"  # Ubuntu 22.04 LTS
-  instance_type = "t2.micro"
-  subnet_id     = var.subnet_ids[1]
+  ami           = "ami-020cba7c55df1f615"  # Specific Ubuntu AMI
+  instance_type = "t2.micro"  # Free tier eligible
+  subnet_id     = aws_subnet.public[1].id  # Use the second public subnet
   key_name      = var.key_name
   vpc_security_group_ids = [aws_security_group.postgres.id]
 
@@ -58,7 +58,7 @@ resource "aws_instance" "postgres" {
 resource "aws_security_group" "mysql" {
   name        = "mysql-sg"
   description = "Security group for MySQL"
-  vpc_id      = "vpc-06eaaae70c3e6b168"
+  vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port   = 3306
@@ -78,7 +78,7 @@ resource "aws_security_group" "mysql" {
 resource "aws_security_group" "postgres" {
   name        = "postgres-sg"
   description = "Security group for PostgreSQL"
-  vpc_id      = "vpc-06eaaae70c3e6b168"
+  vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port   = 5432

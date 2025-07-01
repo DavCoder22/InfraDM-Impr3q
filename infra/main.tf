@@ -17,6 +17,81 @@ provider "aws" {
   region = var.aws_region
 }
 
+# Security Group for ALB
+resource "aws_security_group" "alb" {
+  name        = "${var.project_name}-alb-sg"
+  description = "Security group for ALB"
+  vpc_id      = aws_vpc.main.id
+
+  # HTTP
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+
+  # Allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+
+  tags = {
+    Name = "${var.project_name}-alb-sg"
+  }
+}
+
+# Security Group for EC2 instances
+resource "aws_security_group" "ec2" {
+  name        = "${var.project_name}-ec2-sg"
+  description = "Security group for EC2 instances"
+  vpc_id      = aws_vpc.main.id
+
+  # SSH access from anywhere
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+
+  # Allow HTTP from ALB
+  ingress {
+    from_port       = 80  # Puerto HTTP estándar
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  # Allow HTTP from anywhere (temporal para pruebas)
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+
+  # Allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+
+  tags = {
+    Name = "${var.project_name}-ec2-sg"
+  }
+}
+
 # Create VPC with a single public subnet
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
@@ -339,21 +414,75 @@ resource "aws_instance" "app" {
               mkdir -p /app/nginx/conf.d
               
               # Create nginx configuration
-              cat > /app/nginx/conf.d/app.conf << 'EOL'
+              cat > /etc/nginx/sites-available/${var.project_name} << 'NGINX_CONF'
               server {
                   listen 80;
                   server_name _;
                   
+                  # Health check endpoint
+                  location = /health {
+                      access_log off;
+                      add_header Content-Type application/json;
+                      
+                      # Default response
+                      set $status 'OK';
+                      set $response '"status": "OK"';
+                      
+                      # Check PostgreSQL connection
+                      if ($request_uri ~* "check=postgresql" || $request_uri = /health) {
+                          set $pg_status "";
+                          content_by_lua_block {
+                              local cjson = require "cjson"
+                              local pg = require "pgmoon"
+                              local db = pg:new()
+                              
+                              local response = { status = "OK" }
+                              
+                              -- PostgreSQL check
+                              local ok, err = db:connect({
+                                  host = "postgres",
+                                  port = 5432,
+                                  database = "${var.db_name}",
+                                  user = "${var.db_username}",
+                                  password = "${var.db_password}",
+                                  ssl = false
+                              })
+                              
+                              if not ok then
+                                  response.postgresql = "error"
+                                  response.postgresql_error = tostring(err)
+                                  ngx.status = 503
+                                  response.status = "ERROR"
+                              else
+                                  response.postgresql = "ok"
+                                  db:keepalive()
+                              end
+                              
+                              -- Return JSON response
+                              ngx.say(cjson.encode(response))
+                          }
+                      }
+                      
+                      # Simple health check without DB checks
+                      if ($request_uri !~* "check=") {
+                          return 200 '{"status": "OK"}';
+                      }
+                  }
+                  
+                  # Proxy pass to the application
                   location / {
-                      proxy_pass http://app:3000;
+                      proxy_pass http://127.0.0.1:3000;
                       proxy_http_version 1.1;
                       proxy_set_header Upgrade $http_upgrade;
                       proxy_set_header Connection 'upgrade';
                       proxy_set_header Host $host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $scheme;
                       proxy_cache_bypass $http_upgrade;
                   }
               }
-              EOL
+              NGINX_CONF
               
               # Create certs directory for SSL certificates (for future use)
               mkdir -p /app/certs
@@ -428,6 +557,86 @@ output "instance_public_ip" {
 output "ssh_connection" {
   description = "SSH connection command"
   value       = "ssh -i ${var.key_name}.pem ubuntu@${aws_instance.app_server.public_ip}"
+}
+
+# Application Load Balancer
+resource "aws_lb" "main" {
+  name               = "${var.project_name}-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = [aws_subnet.public.id]  # Usando la subred pública existente
+
+  enable_deletion_protection = false  # Cambiar a true en producción
+
+  tags = {
+    Name = "${var.project_name}-alb"
+  }
+}
+
+# Target Group para el microservicio principal
+resource "aws_lb_target_group" "main" {
+  name        = "${var.project_name}-main-tg"
+  port        = 80  # Puerto HTTP estándar
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "instance"
+
+  health_check {
+    enabled             = true
+    interval            = 30
+    path                = "/health"  # Ruta de health check
+    port                = "traffic-port"
+    healthy_threshold   = 3
+    unhealthy_threshold = 3
+    timeout             = 5
+    matcher             = "200-399"
+  }
+
+
+  tags = {
+    Name = "${var.project_name}-main-tg"
+  }
+}
+
+# Registrar instancia EC2 en el target group
+resource "aws_lb_target_group_attachment" "main" {
+  target_group_arn = aws_lb_target_group.main.arn
+  target_id        = aws_instance.app.id
+  port             = 80  # Puerto HTTP estándar
+}
+
+# Listener HTTP (redirige a HTTPS)
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+# Outputs adicionales para el ALB
+output "alb_dns_name" {
+  description = "DNS name del ALB"
+  value       = aws_lb.main.dns_name
+}
+
+output "alb_zone_id" {
+  description = "Zone ID del ALB"
+  value       = aws_lb.main.zone_id
+}
+
+output "target_group_arn" {
+  description = "ARN del target group principal"
+  value       = aws_lb_target_group.main.arn
 }
 
 output "application_url" {
