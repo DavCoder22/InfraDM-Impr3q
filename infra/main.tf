@@ -2,12 +2,12 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 4.0"
+      version = "~> 5.0"
     }
   }
   backend "s3" {
-    # This will be configured when setting up the S3 backend
-    # bucket = "your-terraform-state-bucket"
+    # Configurar cuando se tenga el bucket S3
+    # bucket = "infradm-terraform-state"
     # key    = "infra/terraform.tfstate"
     # region = "us-east-1"
   }
@@ -15,84 +15,21 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
-}
-
-# Security Group for ALB
-resource "aws_security_group" "alb" {
-  name        = "${var.project_name}-alb-sg"
-  description = "Security group for ALB"
-  vpc_id      = aws_vpc.main.id
-
-  # HTTP
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-
-  # Allow all outbound traffic
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-
-  tags = {
-    Name = "${var.project_name}-alb-sg"
+  
+  default_tags {
+    tags = {
+      Project     = var.project_name
+      Environment = var.environment
+      ManagedBy   = "Terraform"
+    }
   }
 }
 
-# Security Group for EC2 instances
-resource "aws_security_group" "ec2" {
-  name        = "${var.project_name}-ec2-sg"
-  description = "Security group for EC2 instances"
-  vpc_id      = aws_vpc.main.id
+# =============================================================================
+# VPC Y NETWORKING
+# =============================================================================
 
-  # SSH access from anywhere
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-
-  # Allow HTTP from ALB
-  ingress {
-    from_port       = 80  # Puerto HTTP estándar
-    to_port         = 80
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-  }
-
-  # Allow HTTP from anywhere (temporal para pruebas)
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-
-  # Allow all outbound traffic
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-
-  tags = {
-    Name = "${var.project_name}-ec2-sg"
-  }
-}
-
-# Create VPC with a single public subnet
+# VPC principal
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
@@ -103,19 +40,35 @@ resource "aws_vpc" "main" {
   }
 }
 
-# Create public subnet
+# Subnets públicas (múltiples AZ para alta disponibilidad)
 resource "aws_subnet" "public" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = var.public_subnet_cidr
-  availability_zone       = data.aws_availability_zones.available.names[0]
+  count             = length(var.availability_zones)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone = var.availability_zones[count.index]
+  
   map_public_ip_on_launch = true
   
   tags = {
-    Name = "${var.project_name}-public-subnet"
+    Name = "${var.project_name}-public-subnet-${count.index + 1}"
+    Tier = "Public"
   }
 }
 
-# Create Internet Gateway
+# Subnets privadas para las bases de datos
+resource "aws_subnet" "private" {
+  count             = length(var.availability_zones)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + length(var.availability_zones))
+  availability_zone = var.availability_zones[count.index]
+  
+  tags = {
+    Name = "${var.project_name}-private-subnet-${count.index + 1}"
+    Tier = "Private"
+  }
+}
+
+# Internet Gateway
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
   
@@ -124,7 +77,27 @@ resource "aws_internet_gateway" "main" {
   }
 }
 
-# Create public route table
+# NAT Gateway (para instancias privadas)
+resource "aws_eip" "nat" {
+  domain = "vpc"
+  
+  tags = {
+    Name = "${var.project_name}-nat-eip"
+  }
+}
+
+resource "aws_nat_gateway" "main" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public[0].id
+  
+  tags = {
+    Name = "${var.project_name}-nat-gateway"
+  }
+  
+  depends_on = [aws_internet_gateway.main]
+}
+
+# Route Tables
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
   
@@ -138,28 +111,43 @@ resource "aws_route_table" "public" {
   }
 }
 
-# Associate public subnet with public route table
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+  
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.main.id
+  }
+  
+  tags = {
+    Name = "${var.project_name}-private-rt"
+  }
+}
+
+# Route Table Associations
 resource "aws_route_table_association" "public" {
-  subnet_id      = aws_subnet.public.id
+  count          = length(var.availability_zones)
+  subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
 
-# Create security group for EC2
-resource "aws_security_group" "ec2" {
-  name        = "${var.project_name}-ec2-sg"
-  description = "Security group for EC2 instance with all services"
+resource "aws_route_table_association" "private" {
+  count          = length(var.availability_zones)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
+# =============================================================================
+# SECURITY GROUPS
+# =============================================================================
+
+# Security Group para ALB
+resource "aws_security_group" "alb" {
+  name        = "${var.project_name}-alb-sg"
+  description = "Security group for Application Load Balancer"
   vpc_id      = aws_vpc.main.id
-  
-  # SSH access from anywhere
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "SSH access"
-  }
-  
-  # HTTP access from anywhere
+
+  # HTTP
   ingress {
     from_port   = 80
     to_port     = 80
@@ -167,8 +155,8 @@ resource "aws_security_group" "ec2" {
     cidr_blocks = ["0.0.0.0/0"]
     description = "HTTP access"
   }
-  
-  # HTTPS access from anywhere
+
+  # HTTPS
   ingress {
     from_port   = 443
     to_port     = 443
@@ -176,408 +164,291 @@ resource "aws_security_group" "ec2" {
     cidr_blocks = ["0.0.0.0/0"]
     description = "HTTPS access"
   }
-  
-  # Node.js app port
+
+  # Health checks
   ingress {
-    from_port   = 3000
-    to_port     = 3000
+    from_port   = 8080
+    to_port     = 8080
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
-    description = "Node.js app access"
+    description = "Health check port"
   }
-  
-  # Allow all outbound traffic
+
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-  
+
   tags = {
-    Name = "${var.project_name}-ec2-sg"
+    Name = "${var.project_name}-alb-sg"
   }
 }
 
-# Create EC2 instance
-resource "aws_instance" "app" {
-  ami                         = data.aws_ami.ubuntu.id
-  instance_type               = var.instance_type
-  key_name                    = var.key_name
-  vpc_security_group_ids      = [aws_security_group.ec2.id]
-  subnet_id                   = aws_subnet.public.id
-  associate_public_ip_address  = true
-  
-  # Use a larger root volume for database storage
-  root_block_device {
-    volume_size = 50  # 50GB for databases and application
-    volume_type = "gp3"
-    encrypted   = true
-  }
-  
-  # User data script to install Docker, Docker Compose, and set up the application
-  user_data = <<-EOF
-              #!/bin/bash
-              set -e
-              
-              # Update and install required packages
-              apt-get update -y
-              DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
-              apt-get install -y \
-                apt-transport-https \
-                ca-certificates \
-                curl \
-                software-properties-common \
-                git \
-                nginx \
-                ufw
-              
-              # Configure UFW firewall
-              ufw --force enable
-              ufw allow ssh
-              ufw allow http
-              ufw allow https
-              ufw allow 3000/tcp
-              
-              # Install Docker
-              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-              echo \
-                "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
-                $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-              
-              apt-get update -y
-              apt-get install -y docker-ce docker-ce-cli containerd.io
-              
-              # Install Docker Compose
-              curl -L "https://github.com/docker/compose/releases/download/v2.24.6/docker-compose-$(uname -s)-$(uname -m)" \
-                -o /usr/local/bin/docker-compose
-              chmod +x /usr/local/bin/docker-compose
-              
-              # Add ubuntu user to docker group
-              usermod -aG docker ubuntu
-              
-              # Create application directory
-              mkdir -p /app
-              
-              # Create .env file with environment variables
-              cat > /app/.env << 'EOL'
-              # Application
-              NODE_ENV=production
-              PORT=3000
-              JWT_SECRET=${var.jwt_secret}
-              
-              # PostgreSQL
-              POSTGRES_HOST=postgres
-              POSTGRES_PORT=5432
-              POSTGRES_USER=${var.db_username}
-              POSTGRES_PASSWORD=${var.db_password}
-              POSTGRES_DB=${var.db_name}
-              
-              # MySQL
-              MYSQL_HOST=mysql
-              MYSQL_PORT=3306
-              MYSQL_USER=${var.mysql_username}
-              MYSQL_PASSWORD=${var.mysql_password}
-              MYSQL_DATABASE=${var.mysql_database}
-              MYSQL_ROOT_PASSWORD=${var.mysql_root_password}
-              
-              # MongoDB
-              MONGODB_URI=mongodb://${var.mongodb_username}:${var.mongodb_password}@mongodb:27017/${var.mongodb_name}?authSource=admin
-              MONGO_INITDB_ROOT_USERNAME=${var.mongodb_username}
-              MONGO_INITDB_ROOT_PASSWORD=${var.mongodb_password}
-              MONGO_INITDB_DATABASE=${var.mongodb_name}
-              
-              # AWS
-              AWS_ACCESS_KEY_ID=${var.aws_access_key_id}
-              AWS_SECRET_ACCESS_KEY=${var.aws_secret_access_key}
-              AWS_REGION=${var.aws_region}
-              EOL
-              
-              # Create docker-compose.yml
-              cat > /app/docker-compose.yml << 'EOL'
-              version: '3.8'
-              
-              services:
-                app:
-                  build:
-                    context: .
-                    dockerfile: Dockerfile
-                  container_name: ${var.project_name}-app
-                  restart: always
-                  ports:
-                    - "3000:3000"
-                  env_file:
-                    - .env
-                  depends_on:
-                    postgres:
-                      condition: service_healthy
-                    mysql:
-                      condition: service_healthy
-                    mongodb:
-                      condition: service_healthy
-                  networks:
-                    - app-network
-                
-                # PostgreSQL database
-                postgres:
-                  image: postgres:14-alpine
-                  container_name: ${var.project_name}-postgres
-                  restart: always
-                  env_file:
-                    - .env
-                  environment:
-                    - POSTGRES_USER=${var.db_username}
-                    - POSTGRES_PASSWORD=${var.db_password}
-                    - POSTGRES_DB=${var.db_name}
-                  volumes:
-                    - postgres_data:/var/lib/postgresql/data
-                  healthcheck:
-                    test: ["CMD-SHELL", "pg_isready -U ${var.db_username} -d ${var.db_name}"]
-                    interval: 5s
-                    timeout: 5s
-                    retries: 5
-                  networks:
-                    - app-network
-                
-                # MySQL database
-                mysql:
-                  image: mysql:8.0
-                  container_name: ${var.project_name}-mysql
-                  restart: always
-                  env_file:
-                    - .env
-                  environment:
-                    - MYSQL_ROOT_PASSWORD=${var.mysql_root_password}
-                    - MYSQL_DATABASE=${var.mysql_database}
-                    - MYSQL_USER=${var.mysql_username}
-                    - MYSQL_PASSWORD=${var.mysql_password}
-                  volumes:
-                    - mysql_data:/var/lib/mysql
-                  command: --default-authentication-plugin=mysql_native_password
-                  healthcheck:
-                    test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u${var.mysql_username}", "-p${var.mysql_password}"]
-                    interval: 5s
-                    timeout: 5s
-                    retries: 5
-                  networks:
-                    - app-network
-                
-                # MongoDB
-                mongodb:
-                  image: mongo:5.0
-                  container_name: ${var.project_name}-mongodb
-                  restart: always
-                  env_file:
-                    - .env
-                  environment:
-                    - MONGO_INITDB_ROOT_USERNAME=${var.mongodb_username}
-                    - MONGO_INITDB_ROOT_PASSWORD=${var.mongodb_password}
-                    - MONGO_INITDB_DATABASE=${var.mongodb_name}
-                  volumes:
-                    - mongodb_data:/data/db
-                  healthcheck:
-                    test: echo 'db.runCommand("ping").ok' | mongosh --quiet "mongodb://${var.mongodb_username}:${var.mongodb_password}@localhost:27017/${var.mongodb_name}?authSource=admin" --eval ""
-                    interval: 10s
-                    timeout: 5s
-                    retries: 5
-                  networks:
-                    - app-network
-                
-                # Nginx reverse proxy
-                nginx:
-                  image: nginx:alpine
-                  container_name: ${var.project_name}-nginx
-                  restart: always
-                  ports:
-                    - "80:80"
-                    - "443:443"
-                  volumes:
-                    - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-                    - ./nginx/conf.d:/etc/nginx/conf.d
-                    - ./certs:/etc/letsencrypt
-                  depends_on:
-                    - app
-                  networks:
-                    - app-network
-              
-              volumes:
-                postgres_data:
-                mysql_data:
-                mongodb_data:
-              
-              networks:
-                app-network:
-                  driver: bridge
-              EOL
-              
-              # Create nginx configuration directory
-              mkdir -p /app/nginx/conf.d
-              
-              # Create nginx configuration
-              cat > /etc/nginx/sites-available/${var.project_name} << 'NGINX_CONF'
-              server {
-                  listen 80;
-                  server_name _;
-                  
-                  # Health check endpoint
-                  location = /health {
-                      access_log off;
-                      add_header Content-Type application/json;
-                      
-                      # Default response
-                      set $status 'OK';
-                      set $response '"status": "OK"';
-                      
-                      # Check PostgreSQL connection
-                      if ($request_uri ~* "check=postgresql" || $request_uri = /health) {
-                          set $pg_status "";
-                          content_by_lua_block {
-                              local cjson = require "cjson"
-                              local pg = require "pgmoon"
-                              local db = pg:new()
-                              
-                              local response = { status = "OK" }
-                              
-                              -- PostgreSQL check
-                              local ok, err = db:connect({
-                                  host = "postgres",
-                                  port = 5432,
-                                  database = "${var.db_name}",
-                                  user = "${var.db_username}",
-                                  password = "${var.db_password}",
-                                  ssl = false
-                              })
-                              
-                              if not ok then
-                                  response.postgresql = "error"
-                                  response.postgresql_error = tostring(err)
-                                  ngx.status = 503
-                                  response.status = "ERROR"
-                              else
-                                  response.postgresql = "ok"
-                                  db:keepalive()
-                              end
-                              
-                              -- Return JSON response
-                              ngx.say(cjson.encode(response))
-                          }
-                      }
-                      
-                      # Simple health check without DB checks
-                      if ($request_uri !~* "check=") {
-                          return 200 '{"status": "OK"}';
-                      }
-                  }
-                  
-                  # Proxy pass to the application
-                  location / {
-                      proxy_pass http://127.0.0.1:3000;
-                      proxy_http_version 1.1;
-                      proxy_set_header Upgrade $http_upgrade;
-                      proxy_set_header Connection 'upgrade';
-                      proxy_set_header Host $host;
-                      proxy_set_header X-Real-IP $remote_addr;
-                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                      proxy_set_header X-Forwarded-Proto $scheme;
-                      proxy_cache_bypass $http_upgrade;
-                  }
-              }
-              NGINX_CONF
-              
-              # Create certs directory for SSL certificates (for future use)
-              mkdir -p /app/certs
-              
-              # Set permissions
-              chown -R ubuntu:ubuntu /app
-              chmod -R 755 /app
-              
-              # Start services with Docker Compose
-              cd /app
-              docker-compose up --build -d
-              
-              # Set up automatic updates (optional)
-              (crontab -l 2>/dev/null; echo "0 3 * * * /usr/bin/docker system prune -af --volumes") | crontab -
-              (crontab -l 2>/dev/null; echo "0 4 * * * /usr/bin/docker-compose -f /app/docker-compose.yml pull && /usr/bin/docker-compose -f /app/docker-compose.yml up -d --build") | crontab -
-}
-NGINX_CONF
+# Security Group para NLB
+resource "aws_security_group" "nlb" {
+  name        = "${var.project_name}-nlb-sg"
+  description = "Security group for Network Load Balancer"
+  vpc_id      = aws_vpc.main.id
 
-              # Enable the site
-              ln -sf /etc/nginx/sites-available/${var.project_name} /etc/nginx/sites-enabled/
-              rm -f /etc/nginx/sites-enabled/default
-              
-              # Test and restart Nginx
-              nginx -t
-              systemctl restart nginx
-              
-              # Install and configure UFW (firewall)
-              apt-get install -y ufw
-              ufw allow OpenSSH
-              ufw allow 'Nginx Full'
-              ufw --force enable
-              
-              # Print completion message
-              echo "Setup completed successfully!"
-              EOF
-  
+  # HTTP para microservicios
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTP for microservices"
+  }
+
+  # Puerto para microservicios específicos
+  ingress {
+    from_port   = 3000
+    to_port     = 3010
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Microservices ports range"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   tags = {
-    Name        = "${var.project_name}-app-server"
-    Environment = var.environment
-  }
-  
-  # Ensure enough time for the instance to be ready
-  timeouts {
-    create = "10m"
-    delete = "30m"
+    Name = "${var.project_name}-nlb-sg"
   }
 }
 
-# Get latest Ubuntu AMI
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+# Security Group para EC2 instances (API Gateway)
+resource "aws_security_group" "api_gateway" {
+  name        = "${var.project_name}-api-gateway-sg"
+  description = "Security group for API Gateway instances"
+  vpc_id      = aws_vpc.main.id
+
+  # SSH
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "SSH access"
   }
-  
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
+
+  # HTTP desde ALB
+  ingress {
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+    description     = "HTTP from ALB"
   }
-  
-  owners = ["099720109477"] # Canonical
+
+  # Puerto de la aplicación
+  ingress {
+    from_port       = 3000
+    to_port         = 3000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+    description     = "App port from ALB"
+  }
+
+  # Puerto para health checks
+  ingress {
+    from_port       = 8080
+    to_port         = 8080
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+    description     = "Health check from ALB"
+  }
+
+  # Acceso a microservicios
+  ingress {
+    from_port   = 3000
+    to_port     = 3010
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Microservices communication"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.project_name}-api-gateway-sg"
+  }
 }
 
-# Outputs
-output "instance_public_ip" {
-  description = "Public IP address of the EC2 instance"
-  value       = aws_instance.app_server.public_ip
+# Security Group para microservicios
+resource "aws_security_group" "microservices" {
+  name        = "${var.project_name}-microservices-sg"
+  description = "Security group for microservices instances"
+  vpc_id      = aws_vpc.main.id
+
+  # SSH
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "SSH access"
+  }
+
+  # HTTP desde NLB
+  ingress {
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.nlb.id]
+    description     = "HTTP from NLB"
+  }
+
+  # Puertos de microservicios
+  ingress {
+    from_port       = 3000
+    to_port         = 3010
+    protocol        = "tcp"
+    security_groups = [aws_security_group.nlb.id]
+    description     = "Microservices ports from NLB"
+  }
+
+  # Comunicación entre microservicios
+  ingress {
+    from_port       = 3000
+    to_port         = 3010
+    protocol        = "tcp"
+    security_groups = [aws_security_group.microservices.id]
+    description     = "Inter-microservice communication"
+  }
+
+  # Puerto para health checks
+  ingress {
+    from_port       = 8080
+    to_port         = 8080
+    protocol        = "tcp"
+    security_groups = [aws_security_group.nlb.id]
+    description     = "Health check from NLB"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.project_name}-microservices-sg"
+  }
 }
 
-output "ssh_connection" {
-  description = "SSH connection command"
-  value       = "ssh -i ${var.key_name}.pem ubuntu@${aws_instance.app_server.public_ip}"
+# Security Group para bases de datos
+resource "aws_security_group" "databases" {
+  name        = "${var.project_name}-databases-sg"
+  description = "Security group for database instances"
+  vpc_id      = aws_vpc.main.id
+
+  # PostgreSQL
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.api_gateway.id, aws_security_group.microservices.id]
+    description     = "PostgreSQL access"
+  }
+
+  # MySQL
+  ingress {
+    from_port       = 3306
+    to_port         = 3306
+    protocol        = "tcp"
+    security_groups = [aws_security_group.api_gateway.id, aws_security_group.microservices.id]
+    description     = "MySQL access"
+  }
+
+  # MongoDB
+  ingress {
+    from_port       = 27017
+    to_port         = 27017
+    protocol        = "tcp"
+    security_groups = [aws_security_group.api_gateway.id, aws_security_group.microservices.id]
+    description     = "MongoDB access"
+  }
+
+  # Redis
+  ingress {
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [aws_security_group.api_gateway.id, aws_security_group.microservices.id]
+    description     = "Redis access"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.project_name}-databases-sg"
+  }
 }
 
-# Application Load Balancer
-resource "aws_lb" "main" {
-  name               = "${var.project_name}-alb"
+# =============================================================================
+# LOAD BALANCERS
+# =============================================================================
+
+# Application Load Balancer para API Gateway
+resource "aws_lb" "api_gateway" {
+  name               = "${var.project_name}-api-gateway-alb"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
-  subnets            = [aws_subnet.public.id]  # Usando la subred pública existente
+  subnets            = aws_subnet.public[*].id
 
-  enable_deletion_protection = false  # Cambiar a true en producción
+  enable_deletion_protection = false
+
+  access_logs {
+    bucket  = aws_s3_bucket.alb_logs.bucket
+    prefix  = "api-gateway"
+    enabled = true
+  }
 
   tags = {
-    Name = "${var.project_name}-alb"
+    Name = "${var.project_name}-api-gateway-alb"
   }
 }
 
-# Target Group para el microservicio principal
-resource "aws_lb_target_group" "main" {
-  name        = "${var.project_name}-main-tg"
-  port        = 80  # Puerto HTTP estándar
+# Network Load Balancer para microservicios
+resource "aws_lb" "microservices" {
+  name               = "${var.project_name}-microservices-nlb"
+  internal           = false
+  load_balancer_type = "network"
+  subnets            = aws_subnet.public[*].id
+
+  enable_deletion_protection = false
+
+  tags = {
+    Name = "${var.project_name}-microservices-nlb"
+  }
+}
+
+# =============================================================================
+# TARGET GROUPS
+# =============================================================================
+
+# Target Group para API Gateway
+resource "aws_lb_target_group" "api_gateway" {
+  name        = "${var.project_name}-api-gateway-tg"
+  port        = 80
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
   target_type = "instance"
@@ -585,7 +456,7 @@ resource "aws_lb_target_group" "main" {
   health_check {
     enabled             = true
     interval            = 30
-    path                = "/health"  # Ruta de health check
+    path                = "/health"
     port                = "traffic-port"
     healthy_threshold   = 3
     unhealthy_threshold = 3
@@ -593,22 +464,42 @@ resource "aws_lb_target_group" "main" {
     matcher             = "200-399"
   }
 
-
   tags = {
-    Name = "${var.project_name}-main-tg"
+    Name = "${var.project_name}-api-gateway-tg"
   }
 }
 
-# Registrar instancia EC2 en el target group
-resource "aws_lb_target_group_attachment" "main" {
-  target_group_arn = aws_lb_target_group.main.arn
-  target_id        = aws_instance.app.id
-  port             = 80  # Puerto HTTP estándar
+# Target Groups para microservicios (ejemplo para 5 servicios)
+resource "aws_lb_target_group" "microservices" {
+  count       = 5
+  name        = "${var.project_name}-microservice-${count.index + 1}-tg"
+  port        = 3000 + count.index
+  protocol    = "TCP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "instance"
+
+  health_check {
+    enabled             = true
+    interval            = 30
+    port                = "traffic-port"
+    healthy_threshold   = 3
+    unhealthy_threshold = 3
+    timeout             = 5
+    protocol            = "TCP"
+  }
+
+  tags = {
+    Name = "${var.project_name}-microservice-${count.index + 1}-tg"
+  }
 }
 
-# Listener HTTP (redirige a HTTPS)
-resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.main.arn
+# =============================================================================
+# LISTENERS
+# =============================================================================
+
+# Listener HTTP para API Gateway
+resource "aws_lb_listener" "api_gateway_http" {
+  load_balancer_arn = aws_lb.api_gateway.arn
   port              = "80"
   protocol          = "HTTP"
 
@@ -623,37 +514,338 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-# Outputs adicionales para el ALB
-output "alb_dns_name" {
-  description = "DNS name del ALB"
-  value       = aws_lb.main.dns_name
+# Listener HTTPS para API Gateway (placeholder)
+resource "aws_lb_listener" "api_gateway_https" {
+  load_balancer_arn = aws_lb.api_gateway.arn
+  port              = "443"
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-2016-08"
+  # certificate_arn   = aws_acm_certificate.main.arn
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api_gateway.arn
+  }
 }
 
-output "alb_zone_id" {
-  description = "Zone ID del ALB"
-  value       = aws_lb.main.zone_id
+# Listeners para microservicios
+resource "aws_lb_listener" "microservices" {
+  count             = 5
+  load_balancer_arn = aws_lb.microservices.arn
+  port              = 3000 + count.index
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.microservices[count.index].arn
+  }
 }
 
-output "target_group_arn" {
-  description = "ARN del target group principal"
-  value       = aws_lb_target_group.main.arn
+# =============================================================================
+# AUTO SCALING GROUPS
+# =============================================================================
+
+# Launch Template para API Gateway
+resource "aws_launch_template" "api_gateway" {
+  name_prefix   = "${var.project_name}-api-gateway-"
+  image_id      = data.aws_ami.ubuntu.id
+  instance_type = var.api_gateway_instance_type
+
+  network_interfaces {
+    associate_public_ip_address = true
+    security_groups             = [aws_security_group.api_gateway.id]
+  }
+
+  key_name = var.key_name
+
+  user_data = base64encode(templatefile("${path.module}/user_data/api_gateway.sh", {
+    project_name = var.project_name
+    environment  = var.environment
+  }))
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.api_gateway.name
+  }
+
+  monitoring {
+    enabled = true
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "${var.project_name}-api-gateway"
+      Role = "api-gateway"
+    }
+  }
 }
 
-output "application_url" {
-  description = "URL to access the application"
-  value       = "http://${aws_instance.app_server.public_ip}"
+# Launch Template para microservicios
+resource "aws_launch_template" "microservices" {
+  name_prefix   = "${var.project_name}-microservices-"
+  image_id      = data.aws_ami.ubuntu.id
+  instance_type = var.microservices_instance_type
+
+  network_interfaces {
+    associate_public_ip_address = true
+    security_groups             = [aws_security_group.microservices.id]
+  }
+
+  key_name = var.key_name
+
+  user_data = base64encode(templatefile("${path.module}/user_data/microservices.sh", {
+    project_name = var.project_name
+    environment  = var.environment
+  }))
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.microservices.name
+  }
+
+  monitoring {
+    enabled = true
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "${var.project_name}-microservice"
+      Role = "microservice"
+    }
+  }
 }
 
-data "aws_caller_identity" "current" {}
+# Auto Scaling Group para API Gateway
+resource "aws_autoscaling_group" "api_gateway" {
+  name                = "${var.project_name}-api-gateway-asg"
+  desired_capacity    = var.api_gateway_desired_capacity
+  max_size           = var.api_gateway_max_size
+  min_size           = var.api_gateway_min_size
+  target_group_arns  = [aws_lb_target_group.api_gateway.arn]
+  vpc_zone_identifier = aws_subnet.public[*].id
 
-output "account_id" {
-  value = data.aws_caller_identity.current.account_id
+  launch_template {
+    id      = aws_launch_template.api_gateway.id
+    version = "$Latest"
+  }
+
+  tag {
+    key                 = "Name"
+    value              = "${var.project_name}-api-gateway"
+    propagate_at_launch = true
+  }
+
+  tag {
+    key                 = "Role"
+    value              = "api-gateway"
+    propagate_at_launch = true
+  }
 }
 
-output "caller_arn" {
-  value = data.aws_caller_identity.current.arn
+# Auto Scaling Group para microservicios
+resource "aws_autoscaling_group" "microservices" {
+  count               = 5
+  name                = "${var.project_name}-microservice-${count.index + 1}-asg"
+  desired_capacity    = var.microservices_desired_capacity
+  max_size           = var.microservices_max_size
+  min_size           = var.microservices_min_size
+  target_group_arns  = [aws_lb_target_group.microservices[count.index].arn]
+  vpc_zone_identifier = aws_subnet.public[*].id
+
+  launch_template {
+    id      = aws_launch_template.microservices.id
+    version = "$Latest"
+  }
+
+  tag {
+    key                 = "Name"
+    value              = "${var.project_name}-microservice-${count.index + 1}"
+    propagate_at_launch = true
+  }
+
+  tag {
+    key                 = "Role"
+    value              = "microservice"
+    propagate_at_launch = true
+  }
 }
 
-output "caller_user" {
-  value = data.aws_caller_identity.current.user_id
+# =============================================================================
+# IAM ROLES
+# =============================================================================
+
+# IAM Role para API Gateway
+resource "aws_iam_role" "api_gateway" {
+  name = "${var.project_name}-api-gateway-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# IAM Role para microservicios
+resource "aws_iam_role" "microservices" {
+  name = "${var.project_name}-microservices-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# IAM Instance Profiles
+resource "aws_iam_instance_profile" "api_gateway" {
+  name = "${var.project_name}-api-gateway-profile"
+  role = aws_iam_role.api_gateway.name
+}
+
+resource "aws_iam_instance_profile" "microservices" {
+  name = "${var.project_name}-microservices-profile"
+  role = aws_iam_role.microservices.name
+}
+
+# =============================================================================
+# S3 BUCKET PARA LOGS
+# =============================================================================
+
+resource "aws_s3_bucket" "alb_logs" {
+  bucket = "${var.project_name}-alb-logs-${random_string.bucket_suffix.result}"
+}
+
+resource "aws_s3_bucket_versioning" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# =============================================================================
+# CLOUDWATCH Y MONITORING
+# =============================================================================
+
+# CloudWatch Log Groups
+resource "aws_cloudwatch_log_group" "api_gateway" {
+  name              = "/aws/ec2/${var.project_name}-api-gateway"
+  retention_in_days = 7
+}
+
+resource "aws_cloudwatch_log_group" "microservices" {
+  name              = "/aws/ec2/${var.project_name}-microservices"
+  retention_in_days = 7
+}
+
+# CloudWatch Dashboard
+resource "aws_cloudwatch_dashboard" "main" {
+  dashboard_name = "${var.project_name}-dashboard"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type   = "metric"
+        x      = 0
+        y      = 0
+        width  = 12
+        height = 6
+
+        properties = {
+          metrics = [
+            ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", aws_lb.api_gateway.arn_suffix],
+            [".", "TargetResponseTime", ".", "."],
+            [".", "HTTPCode_Target_2XX_Count", ".", "."],
+            [".", "HTTPCode_Target_4XX_Count", ".", "."],
+            [".", "HTTPCode_Target_5XX_Count", ".", "."]
+          ]
+          period = 300
+          stat   = "Sum"
+          region = var.aws_region
+          title  = "API Gateway Load Balancer Metrics"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 0
+        width  = 12
+        height = 6
+
+        properties = {
+          metrics = [
+            ["AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", aws_autoscaling_group.api_gateway.name],
+            [".", "GroupInServiceInstances", ".", "."],
+            [".", "GroupTotalInstances", ".", "."]
+          ]
+          period = 300
+          stat   = "Average"
+          region = var.aws_region
+          title  = "Auto Scaling Group Metrics"
+        }
+      }
+    ]
+  })
+}
+
+# =============================================================================
+# DATA SOURCES
+# =============================================================================
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"]
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+# Random string para nombres únicos
+resource "random_string" "bucket_suffix" {
+  length  = 8
+  special = false
+  upper   = false
 }

@@ -1,40 +1,129 @@
-# AWS Configuration
-aws_region    = "us-east-1"
-key_name      = "your-key-pair-name"  # Make sure this key pair exists in your AWS account
+# =============================================================================
+# AWS CONFIGURATION
+# =============================================================================
 
-# EC2 Configuration
-instance_type = "t3.medium"      # t3.medium is a good balance of CPU and memory for development
+# AWS region to deploy to
+aws_region = "us-east-1"
 
-# Application Configuration
+# Project configuration
 project_name = "infradm"
-jwt_secret = "generate-a-secure-random-secret"
+environment  = "dev"
 
-# Database Configuration
+# Availability zones (use 2 for high availability)
+availability_zones = ["us-east-1a", "us-east-1b"]
+
+# VPC configuration
+vpc_cidr = "10.0.0.0/16"
+
+# =============================================================================
+# INSTANCE CONFIGURATION
+# =============================================================================
+
+# AWS key pair name (create this in AWS console)
+key_name = "your-key-pair-name"
+
+# API Gateway instance configuration
+api_gateway_instance_type = "t3.small"
+api_gateway_desired_capacity = 1
+api_gateway_min_size = 1
+api_gateway_max_size = 3
+
+# Microservices instance configuration
+microservices_instance_type = "t3.micro"
+microservices_desired_capacity = 1
+microservices_min_size = 1
+microservices_max_size = 5
+microservices_count = 5
+
+# =============================================================================
+# DATABASE CONFIGURATION
+# =============================================================================
+
+# PostgreSQL configuration
 db_name = "catalogodb"
 db_username = "postgres"
-db_password = "change-me-please"  # Use a strong password in production
+db_password = "your-secure-postgres-password"
 
-# MySQL Configuration
+# MySQL configuration
 mysql_database = "catalogodb"
-mysql_username = "mysqluser"
-mysql_password = "change-me-please"  # Use a strong password in production
-mysql_root_password = "change-me-root"  # Use a strong root password in production
+mysql_username = "mysql"
+mysql_password = "your-secure-mysql-password"
+mysql_root_password = "your-secure-mysql-root-password"
 
-# MongoDB Configuration
-mongodb_username = "mongouser"
-mongodb_password = "change-me-please"  # Use a strong password in production
+# MongoDB configuration
+mongodb_username = "mongodb"
+mongodb_password = "your-secure-mongodb-password"
 mongodb_name = "catalogodb"
 
-# AWS Credentials (for application use)
-# These are different from your AWS provider credentials
-# They are used by the application to access AWS services like S3
+# Redis configuration
+redis_password = "your-secure-redis-password"
+
+# =============================================================================
+# APPLICATION CONFIGURATION
+# =============================================================================
+
+# JWT secret for authentication
+jwt_secret = "your-super-secure-jwt-secret-key-change-this-in-production"
+
+# AWS credentials for application use (optional)
 aws_access_key_id = ""
 aws_secret_access_key = ""
 
-# Note: For production, consider using AWS Secrets Manager or Parameter Store
-# instead of storing sensitive values directly in variables.
+# =============================================================================
+# MONITORING CONFIGURATION
+# =============================================================================
 
-# Network Configuration
-vpc_cidr = "10.0.0.0/16"
-public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
-private_subnet_cidrs = ["10.0.101.0/24", "10.0.102.0/24"]
+# CloudWatch configuration
+enable_cloudwatch_logs = true
+enable_cloudwatch_dashboard = true
+log_retention_days = 7
+
+# Site24x7 monitoring (optional)
+site24x7_enabled = true
+site24x7_agent_key = "your-site24x7-agent-key"
+
+# Grafana monitoring (optional)
+grafana_enabled = true
+grafana_endpoint = "https://your-grafana-instance.com"
+grafana_api_key = "your-grafana-api-key"
+
+# =============================================================================
+# COST OPTIMIZATION (for educational plan)
+# =============================================================================
+
+# Instance types optimized for cost
+# t3.micro: ~$8/month
+# t3.small: ~$16/month
+# t3.medium: ~$32/month
+
+# Auto scaling limits for cost control
+# API Gateway: 1-3 instances
+# Microservices: 1-5 instances per service
+
+# =============================================================================
+# SECURITY NOTES
+# =============================================================================
+
+# IMPORTANT: Change all default passwords before production use
+# - Database passwords
+# - JWT secret
+# - Redis password
+# - AWS credentials
+
+# =============================================================================
+# DEPLOYMENT NOTES
+# =============================================================================
+
+# 1. Create an AWS key pair in the AWS console
+# 2. Update the key_name variable above
+# 3. Set secure passwords for all databases
+# 4. Configure monitoring keys if using Site24x7 or Grafana
+# 5. Review and adjust instance types based on your needs
+# 6. Consider using AWS Secrets Manager for production passwords
+
+# Estimated monthly cost (us-east-1):
+# - API Gateway (t3.small): ~$16
+# - Microservices (5x t3.micro): ~$40
+# - Load Balancers: ~$20
+# - Data transfer: ~$10
+# - Total: ~$86/month (varies based on usage)

@@ -1,0 +1,28 @@
+{
+  "name": "infradm-impr3q",
+  "version": "1.0.0",
+  "description": "Database testing for InfraDM-Impr3q project",
+  "main": "index.js",
+  "scripts": {
+    "test": "jest --detectOpenHandles --forceExit",
+    "test:mysql": "jest tests/mysql --detectOpenHandles --forceExit",
+    "test:postgres": "jest tests/postgresql --detectOpenHandles --forceExit",
+    "test:mongo": "jest tests/mongodb --detectOpenHandles --forceExit",
+    "test:redis": "jest tests/redis --detectOpenHandles --forceExit"
+  },
+  "dependencies": {
+    "mysql2": "^3.6.5",
+    "pg": "^8.11.3",
+    "mongodb": "^5.7.0",
+    "redis": "^4.6.10",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "jest": "^29.6.4",
+    "supertest": "^6.3.3"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testTimeout": 15000
+  }
+}
